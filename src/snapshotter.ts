@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RecordLocation, ResolvedType } from "skir-internal";
-import { checkCompatibility } from "./compatibility_checker.js";
+import { checkCompatibilityReport } from "./compatibility_checker.js";
 import {
   formatError,
   makeGreen,
@@ -45,12 +45,12 @@ export async function takeSnapshot(args: {
     );
     return false;
   }
-  const breakingChanges = checkCompatibility({
+  const compatibilityReport = checkCompatibilityReport({
     before: oldModuleSet,
     after: newModuleSet,
   });
-  if (breakingChanges.length) {
-    renderBreakingChanges(breakingChanges, {
+  if (!compatibilityReport.compatible) {
+    renderBreakingChanges(compatibilityReport.breakingChanges, {
       before: oldModuleSet,
       after: newModuleSet,
     });

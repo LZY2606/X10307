@@ -8,6 +8,7 @@ import {
   type BeforeAfter,
   type BreakingChange,
   type Expression,
+  buildCompatibilityReport,
   getTokenForBreakingChange,
 } from "./compatibility_checker.js";
 import type { SkirConfigError } from "./config_parser.js";
@@ -128,6 +129,16 @@ export function renderBreakingChanges(
   const s = numBreakingChanges === 1 ? "" : "s";
   if (numBreakingChanges) {
     console.error(`Found ${numBreakingChanges} breaking change${s}\n`);
+    const report = buildCompatibilityReport(breakingChanges);
+    console.error("Compatibility summary:");
+    for (const verdict of report.dimensions) {
+      const count = verdict.breakingChanges.length;
+      const status = verdict.compatible
+        ? makeGreen("compatible")
+        : makeRed(`breaking (${count} change${count === 1 ? "" : "s"})`);
+      console.error(`  ${verdict.dimension}: ${status}`);
+    }
+    console.error();
   }
 }
 

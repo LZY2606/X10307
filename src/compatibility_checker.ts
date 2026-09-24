@@ -102,6 +102,179 @@ export function checkCompatibility(
   return new CompatibilityChecker(moduleSet).check();
 }
 
+/**
+ * A dimension along which a schema change is judged. Compatibility is not a
+ * single boolean: a change may break one dimension while leaving the others
+ * intact.
+ *
+ * - "wire": serialized data written with the old schema can still be read and
+ *   interpreted correctly with the new schema.
+ * - "source-api": code generated from the new schema still exposes a
+ *   source-compatible API to its consumers.
+ * - "semantic-defaults": default values and the meaning of absent data are
+ *   preserved.
+ */
+export type CompatibilityDimension =
+  | "wire"
+  | "source-api"
+  | "semantic-defaults";
+
+/** All dimensions, in a fixed, deterministic order. */
+export const COMPATIBILITY_DIMENSIONS: readonly CompatibilityDimension[] = [
+  "wire",
+  "source-api",
+  "semantic-defaults",
+];
+
+/**
+ * Returns the dimensions affected by a given kind of breaking change.
+ */
+export function dimensionsAffectedByBreakingChange(
+  kind: BreakingChange["kind"],
+): readonly CompatibilityDimension[] {
+  switch (kind) {
+    case "illegal-type-change":
+    case "missing-slots":
+    case "missing-record":
+    case "missing-method":
+    case "record-kind-change":
+    case "missing-variant": {
+      return ["wire", "source-api"];
+    }
+    case "removed-number-reintroduced": {
+      // Reusing a removed number does not remove anything from the generated
+      // source API, but old payloads get misinterpreted on the wire.
+      return ["wire", "semantic-defaults"];
+    }
+    case "wrapper-to-constant-variant": {
+      return ["wire", "source-api", "semantic-defaults"];
+    }
+  }
+}
+
+export interface DimensionVerdict {
+  readonly dimension: CompatibilityDimension;
+  readonly compatible: boolean;
+  readonly breakingChanges: readonly BreakingChange[];
+}
+
+/**
+ * Structured result of a compatibility check. Unlike a single boolean, this
+ * report keeps the verdict of each dimension separate and preserves the
+ * individual breaking changes so callers can point at the exact declaration
+ * and field identity responsible for a failure.
+ */
+export interface CompatibilityReport {
+  /** True only if every dimension is compatible. */
+  readonly compatible: boolean;
+  readonly breakingChanges: readonly BreakingChange[];
+  /** One verdict per dimension, in the order of COMPATIBILITY_DIMENSIONS. */
+  readonly dimensions: readonly DimensionVerdict[];
+}
+
+export function buildCompatibilityReport(
+  breakingChanges: readonly BreakingChange[],
+): CompatibilityReport {
+  const dimensions: DimensionVerdict[] = COMPATIBILITY_DIMENSIONS.map(
+    (dimension) => {
+      const relevant = breakingChanges.filter((change) =>
+        dimensionsAffectedByBreakingChange(change.kind).includes(dimension),
+      );
+      return {
+        dimension,
+        compatible: relevant.length === 0,
+        breakingChanges: relevant,
+      };
+    },
+  );
+  return {
+    compatible: breakingChanges.length === 0,
+    breakingChanges,
+    dimensions,
+  };
+}
+
+/**
+ * Same as `checkCompatibility`, but returns a structured `CompatibilityReport`
+ * instead of a bare list of breaking changes.
+ */
+export function checkCompatibilityReport(
+  moduleSet: BeforeAfter<ModuleSet>,
+): CompatibilityReport {
+  return buildCompatibilityReport(checkCompatibility(moduleSet));
+}
+
+/**
+ * Returns a stable, human-readable identity for a breaking change, including
+ * the declaration (module path + qualified record/method name) and, when
+ * applicable, the field identity (slot number + field/variant name). Two runs
+ * over equivalent inputs produce the same identities regardless of module
+ * enumeration order.
+ */
+export function getBreakingChangeIdentity(
+  breakingChange: BreakingChange,
+): string {
+  switch (breakingChange.kind) {
+    case "illegal-type-change": {
+      return `type-change at ${formatExpressionIdentity(breakingChange.expression.after)}`;
+    }
+    case "missing-slots": {
+      return `slots [${breakingChange.missingRangeStart}, ${breakingChange.missingRangeEnd}) of ${recordLocationIdentity(breakingChange.record.before)}`;
+    }
+    case "missing-record": {
+      return `record ${recordLocationIdentity(breakingChange.record)} (#${breakingChange.recordNumber})`;
+    }
+    case "missing-method": {
+      const { method } = breakingChange;
+      return `method ${method.name.line.modulePath}:${method.name.text} (#${method.number})`;
+    }
+    case "record-kind-change": {
+      return `record-kind of ${recordLocationIdentity(breakingChange.record.before)}`;
+    }
+    case "removed-number-reintroduced": {
+      return `number #${breakingChange.removedNumber} of ${recordLocationIdentity(breakingChange.record.before)} reintroduced as '${breakingChange.reintroducedAs.text}'`;
+    }
+    case "missing-variant": {
+      return `variant '${breakingChange.variantName.text}' (#${breakingChange.number}) of ${recordLocationIdentity(breakingChange.record.before)}`;
+    }
+    case "wrapper-to-constant-variant": {
+      return `variant '${breakingChange.variantName.before.text}' (#${breakingChange.number}) of ${recordLocationIdentity(breakingChange.record.before)}`;
+    }
+  }
+}
+
+function recordLocationIdentity(record: RecordLocation): string {
+  const qualifiedName = record.recordAncestors
+    .map((ancestor) => ancestor.name.text)
+    .join(".");
+  return `${record.modulePath}:${qualifiedName}`;
+}
+
+function formatExpressionIdentity(expression: Expression): string {
+  const token = getTokenForExpression(expression);
+  const location = token.line.modulePath;
+  return `${location}:${formatExpressionPath(expression)}`;
+}
+
+function formatExpressionPath(expression: Expression): string {
+  switch (expression.kind) {
+    case "request-type":
+      return `${expression.methodName.text}(request)`;
+    case "response-type":
+      return `${expression.methodName.text}(response)`;
+    case "record":
+      return expression.recordName.text;
+    case "item":
+      return `${formatExpressionPath(expression.arrayExpression)}[*]`;
+    case "optional-value":
+      return `${formatExpressionPath(expression.optionalExpression)}?`;
+    case "property":
+      return `${formatExpressionPath(expression.structExpression)}.${expression.fieldName.text}`;
+    case "as-variant":
+      return `${formatExpressionPath(expression.enumExpression)}.as_${expression.variantName.text}`;
+  }
+}
+
 class CompatibilityChecker {
   constructor(private readonly moduleSet: BeforeAfter<ModuleSet>) {}
 
