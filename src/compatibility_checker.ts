@@ -434,7 +434,9 @@ function getTokenForExpression(expression: Expression): Token {
   }
 }
 
-function primitiveTypesAreCompatible(type: BeforeAfter<Primitive>): boolean {
+export function primitiveTypesAreCompatible(
+  type: BeforeAfter<Primitive>,
+): boolean {
   switch (type.before) {
     case "bool":
       return (
