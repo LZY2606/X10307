@@ -1,0 +1,292 @@
+import {
+  unquoteAndUnescape,
+  type CodeLine,
+  type Doc,
+  type ErrorSink,
+  type Result,
+  type SkirError,
+  type Token,
+} from "skir-internal";
+import { parseDocComment } from "./doc_comment_parser.js";
+
+export interface ModuleTokens {
+  /** Includes regular comments and doc comments. */
+  readonly tokens: readonly Token[];
+  /** Includes both kinds of comments. */
+  readonly tokensWithComments: readonly Token[];
+  /** Maps the start position of a doc comment (///) to the parsed documentation. */
+  readonly posToDoc: Readonly<{
+    [pos: number]: Doc;
+  }>;
+  readonly sourceCode: string;
+  readonly modulePath: string;
+}
+
+/** Tokenizes the given module. */
+export function tokenizeModule(
+  sourceCode: string,
+  modulePath: string,
+  completionMode?: {
+    position: number;
+  },
+): Result<ModuleTokens> {
+  const tokens: Token[] = [];
+  const errors: SkirError[] = [];
+
+  const lines = new Lines(sourceCode, modulePath);
+
+  // Multiline comment:            \/\*([^*]|\*[^\/])*(\*\/)?
+  // Single-line comment:          \/\/[^\n\r]*
+  // Number:                       -?(0|[1-9][0-9]*)(\.[0-9]+)?\b
+  // Word:                         \b\w+\b
+  // Whitespaces:                  [ \n\r\t]+
+  // Symbol:                       \.\.|\{\||\|\}|[{}[\]()*.:=;|?,]
+  // Double-quote string literal:  "(\\(\n|\r|\n\r|.)|[^\\\"\n\r])*"?
+  // Single-quote string literal:  '(\\(\n|\r|\n\r|.)|[^\\\'\n\r])*'?
+  //
+  // To iterate on this regex, use https://regex101.com/.
+  const re =
+    /(\/\*([^*]|\*[^/])*(\*\/)?)|(\/\/[^\n\r]*)|(-?(0|[1-9][0-9]*)(\.[0-9]+)?\b)|\b(\w+)\b|([ \n\r\t]+)|(\.\.|\{\||\|\}|[{}[\]()*.:=;|?,])|("(\\(\n|\r|\n\r|.)|[^\\"\n\r])*"?)|('(\\(\n|\r|\n\r|.)|[^\\'\n\r])*'?)|($)/g;
+  // 1    2             3        4              5  6              7                8       9            10                                 11   13                             14   16                             17
+
+  let group: RegExpExecArray | null;
+  let expectedPosition = 0;
+  while ((group = re.exec(sourceCode)) !== null) {
+    const position = re.lastIndex - group[0].length;
+
+    // Check that all the regex matches are consecutive.
+    // If there is a gap between two matches, it means that we have an invalid
+    // sequence of characters.
+    if (position !== expectedPosition) {
+      const line = lines.advancePosition(expectedPosition);
+      const colNumber = expectedPosition - line.position;
+      const text = sourceCode.substring(expectedPosition, position);
+      errors.push({
+        token: {
+          text: text,
+          originalText: text,
+          position: expectedPosition,
+          line: line,
+          colNumber: colNumber,
+        },
+        message: "Invalid sequence of characters",
+      });
+    }
+    expectedPosition = re.lastIndex;
+
+    const line = lines.advancePosition(position);
+    const colNumber = position - line.position;
+    const token: Token = {
+      text: group[0],
+      originalText: group[0],
+      position: position,
+      line: line,
+      colNumber: colNumber,
+    };
+
+    if (group[1] !== undefined && !group[1].endsWith("*/")) {
+      errors.push({
+        token: token,
+        message: "Unterminated multi-line comment",
+      });
+    }
+
+    if (group[8] !== undefined) {
+      if (!validateWord(token, errors)) {
+        continue;
+      }
+    }
+
+    // Skip whitespaces.
+    if (group[9] !== undefined) continue;
+
+    // Validate string literals.
+    const stringLiteral = group[11] || group[14];
+    if (stringLiteral !== undefined) {
+      if (!stringLiteral.endsWith(stringLiteral[0]!)) {
+        errors.push({
+          token: token,
+          message: "Unterminated string literal",
+        });
+        continue;
+      }
+      const stringLiteralRe =
+        /^["'](\\(\r\n|u[0-9A-Fa-f]{4}|["'\\/bfnrt\n\r])|[^\\])*["']$/;
+      if (!stringLiteralRe.test(stringLiteral)) {
+        errors.push({
+          token: token,
+          message: "String literal contains invalid escape sequence",
+        });
+        continue;
+      }
+      // Check that the string doesn't contain lone surrogates.
+      // See https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/isWellFormed
+      const unquoted = unquoteAndUnescape(stringLiteral);
+      try {
+        encodeURIComponent(unquoted);
+      } catch {
+        errors.push({
+          token: token,
+          message: "String literal contains lone surrogates",
+        });
+        continue;
+      }
+    }
+
+    tokens.push(token);
+
+    if (group[17] !== undefined) {
+      // The end of the string has been reached.
+      // The last token we added is an empty string.
+      break;
+    }
+  }
+
+  if (completionMode !== undefined) {
+    const { position } = completionMode;
+    const existingToken = tokens.find((t) => {
+      const start = t.position;
+      const end = t.position + t.text.length;
+      if (/^\w/.test(t.text)) {
+        // Word token: inclusive comparisons.
+        return position >= start && position <= end;
+      } else {
+        // Non-word token: exclusive comparisons.
+        return position > start && position < end;
+      }
+    });
+    if (existingToken === undefined) {
+      const fakeLines = new Lines(sourceCode, modulePath);
+      const line = fakeLines.advancePosition(position);
+      const colNumber = position - line.position;
+      const fakeToken: Token = {
+        text: "...",
+        originalText: "",
+        position: position,
+        line: line,
+        colNumber: colNumber,
+      };
+      const insertIndex = tokens.findIndex((t) => t.position >= position);
+      if (insertIndex === -1) {
+        tokens.push(fakeToken);
+      } else {
+        tokens.splice(insertIndex, 0, fakeToken);
+      }
+    }
+  }
+
+  // Parse the doc comments.
+  const posToDoc: { [pos: number]: Doc } = {};
+  for (const token of tokens) {
+    if (!token.text.startsWith("///")) {
+      continue;
+    }
+    const docResult = parseDocComment(token, completionMode);
+    posToDoc[token.position] = docResult.result;
+    docResult.errors.forEach((e) => errors.push(e));
+  }
+
+  return {
+    result: {
+      tokens: tokens.filter((t) => !isRegularComment(t.originalText)),
+      tokensWithComments: tokens,
+      posToDoc: posToDoc,
+      sourceCode: sourceCode,
+      modulePath: modulePath,
+    },
+    errors: errors,
+  };
+}
+
+function validateWord(token: Token, errors: ErrorSink): boolean {
+  if (/^[0-9]/.test(token.text)) {
+    errors.push({
+      token: token,
+      message: "Invalid number",
+    });
+    return false;
+  }
+
+  if (token.text.startsWith("_")) {
+    errors.push({
+      token: token,
+      message: "Identifier cannot start with _",
+    });
+    return false;
+  }
+  if (token.text.endsWith("_")) {
+    errors.push({
+      token: token,
+      message: "Identifier cannot end with _",
+    });
+    return false;
+  }
+  if (token.text.includes("__")) {
+    errors.push({
+      token: token,
+      message: "Identifier cannot contain __ sequence",
+    });
+    return false;
+  }
+  if (/_[0-9]/.test(token.text)) {
+    // The problem is we could end up with duplicate field names when converting
+    // to camel case. For example: "field0" and "field_0" would both be
+    // converted to "field0".
+    errors.push({
+      token: token,
+      message: "Digit cannot follow _",
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function isRegularComment(token: string): boolean {
+  return (
+    token.startsWith("/*") ||
+    (token.startsWith("//") && !token.startsWith("///"))
+  );
+}
+
+class Lines {
+  /** Splits the given code into multiple lines. */
+  constructor(code: string, modulePath: string) {
+    const lines = this.lines;
+    let lineStart = 0;
+    let group: RegExpExecArray | null;
+    const re = /\n|\r|\n\r|$/g;
+    while ((group = re.exec(code)) !== null) {
+      const match = group[0];
+      const lineEnd = re.lastIndex - match.length;
+      const lineString = code.substring(lineStart, lineEnd);
+      lines.push({
+        lineNumber: lines.length,
+        line: lineString,
+        position: lineStart,
+        modulePath: modulePath,
+      });
+      // Record the position after the EOL or EOF.
+      lineStart = re.lastIndex;
+      if (match === "") {
+        break;
+      }
+    }
+  }
+
+  /**
+   * Returns the line at the given position, where the position is the char
+   * index within `code`.
+   * Requires the position to be >= the position given the last time the method
+   * was called.
+   */
+  advancePosition(position: number): CodeLine {
+    const lines = this.lines;
+    while (lines.length >= 2 && position >= this.lines[1]!.position) {
+      lines.shift();
+    }
+    return lines[0]!;
+  }
+
+  private readonly lines: CodeLine[] = [];
+}

@@ -1,0 +1,121 @@
+import {
+  unquoteAndUnescape,
+  type DenseJson,
+  type Primitive,
+} from "skir-internal";
+
+export function valueHasPrimitiveType(
+  token: string,
+  expectedType: Primitive,
+): boolean {
+  switch (expectedType) {
+    case "bool":
+      return token === "false" || token === "true";
+    case "bytes":
+      return (
+        isStringLiteral(token) &&
+        /^hex:([0-9A-Fa-f]{2})*$/.test(unquoteAndUnescape(token))
+      );
+    case "timestamp": {
+      if (!isStringLiteral(token)) {
+        return false;
+      }
+      const dateTime = unquoteAndUnescape(token);
+      const timestamp = Date.parse(dateTime).valueOf();
+      return (
+        // A timezone is required.
+        /(Z|[+-]\d\d:\d\d)$/.test(dateTime) &&
+        -8640000000000000 <= timestamp &&
+        timestamp <= 8640000000000000 &&
+        timestamp === Math.round(timestamp)
+      );
+    }
+    case "int32":
+      return isIntLiteral(token, BigInt(-2147483648), BigInt(2147483647));
+    case "int64":
+      return isIntLiteral(
+        token,
+        BigInt("-9223372036854775808"),
+        BigInt("9223372036854775807"),
+      );
+    case "hash64":
+      return isIntLiteral(token, BigInt(0), BigInt("18446744073709551615"));
+    case "float32":
+    case "float64": {
+      if (isStringLiteral(token)) {
+        const stringLiteral = unquoteAndUnescape(token);
+        return (
+          stringLiteral === "NaN" ||
+          stringLiteral === "Infinity" ||
+          stringLiteral === "-Infinity"
+        );
+      } else {
+        return /^[-0-9]/.test(token);
+      }
+    }
+    case "string":
+      return isStringLiteral(token);
+  }
+}
+
+export function isStringLiteral(token: string): boolean {
+  return /^['"]/.test(token);
+}
+
+function isIntLiteral(token: string, min: bigint, max: bigint): boolean {
+  if (!/^-?[0-9]+$/.test(token)) {
+    return false;
+  }
+  const value = BigInt(token);
+  return min <= value && value <= max;
+}
+
+export function literalValueToDenseJson(
+  token: string,
+  type: Primitive,
+): DenseJson {
+  switch (type) {
+    case "bool":
+      return token === "true" ? 1 : 0;
+    case "bytes": {
+      const string = unquoteAndUnescape(token);
+      return hexToBase64(string.substring(4));
+    }
+    case "timestamp": {
+      const dateTime = unquoteAndUnescape(token);
+      return Math.round(new Date(dateTime).valueOf());
+    }
+    case "int32":
+    case "float32":
+    case "float64": {
+      return isStringLiteral(token) ? unquoteAndUnescape(token) : Number(token);
+    }
+    case "int64":
+    case "hash64":
+      return String(BigInt(token));
+    case "string":
+      return unquoteAndUnescape(token);
+  }
+}
+
+/**
+ * Assuming `token` is a literal value of primitive type, returns a string which
+ * uniquely identifies the value within the primitive type. The behavior is
+ * undefined if `token` does not match `type`.
+ * Use this function to check if two literal values are actually equal.
+ */
+export function literalValueToIdentity(token: string, type: Primitive): string {
+  const denseJson = literalValueToDenseJson(token, type);
+  return typeof denseJson === "string" ? denseJson : JSON.stringify(denseJson);
+}
+
+function hexToBase64(hex: string): string {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+  }
+  const binaryString = Array.from(bytes, (byte) =>
+    String.fromCharCode(byte),
+  ).join("");
+  return btoa(binaryString);
+}

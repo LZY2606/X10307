@@ -1,0 +1,84 @@
+{
+  "name": "skir",
+  "version": "1.2.22",
+  "description": "",
+  "homepage": "https://skir.build/",
+  "bugs": {
+    "url": "https://github.com/gepheum/skir/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gepheum/skir.git"
+  },
+  "license": "ISC",
+  "author": "Tyler Fibonacci <gepheum@gmail.com>",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./dist/*": {
+      "import": "./dist/*",
+      "require": "./dist/*"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "bin": "./dist/compiler.js",
+  "files": [
+    "dist",
+    "src",
+    "!**/*.test.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "skir": "npm run build && node ./dist/compiler.js",
+    "test": "mocha",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix"
+  },
+  "dependencies": {
+    "glob": "^13.0.6",
+    "skir-cc-gen": "^1.0.16",
+    "skir-csharp-gen": "^0.1.1",
+    "skir-dart-gen": "^1.0.9",
+    "skir-gleam-gen": "^0.1.4",
+    "skir-go-gen": "^0.1.7",
+    "skir-internal": "^0.2.21",
+    "skir-java-gen": "^1.0.10",
+    "skir-kotlin-gen": "^1.0.11",
+    "skir-moonbit-gen": "^0.1.0",
+    "skir-python-gen": "^1.0.9",
+    "skir-rust-gen": "^0.1.5",
+    "skir-swift-gen": "^0.1.7",
+    "skir-typescript-gen": "^1.0.11",
+    "skir-zig-gen": "^0.1.8",
+    "watcher": "^2.3.1",
+    "yaml": "^2.7.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^20.19.39",
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "buckwheat": "^1.1.2",
+    "eslint": "^10.0.1",
+    "mocha": "^11.7.5",
+    "prettier": "^3.8.1",
+    "prettier-plugin-organize-imports": "^4.2.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.2.2",
+    "typescript-eslint": "^8.56.0"
+  },
+  "overrides": {
+    "minimatch": "^10.2.1",
+    "diff": "^8.0.0",
+    "serialize-javascript": "^7.0.4"
+  }
+}
